@@ -90,14 +90,14 @@ exports.resolveEmergency = async (req, res, next) => {
          AND (
            e.user_id = $3
            OR (
-             $4 IN ('admin', 'security')
-             AND $5 IS NOT NULL
+             $4::text IN ('admin', 'security')
+             AND $5::uuid IS NOT NULL
              AND EXISTS (
                SELECT 1 FROM users reporter
-               WHERE reporter.id = e.user_id AND reporter.complex_id = $5
+               WHERE reporter.id = e.user_id AND reporter.complex_id = $5::uuid
              )
            )
-           OR $4 = 'super_admin'
+           OR $4::text = 'super_admin'
          )
        RETURNING e.*`,
       [status, id, user_id, req.user.role, req.complexId || null]
