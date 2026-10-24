@@ -155,6 +155,7 @@ describe('Society notices authorization and delivery', () => {
     expect(ensureSocietyNoticeNotifications).toHaveBeenCalledWith(dbUser(residentId, 'resident', complexB));
     expect(query.mock.calls[1][0]).toContain('nt.user_id = $1');
     expect(query.mock.calls[1][0]).toContain('n.complex_id = $2');
+    expect(query.mock.calls[1][0]).toContain("notice_assigned_complex.lifecycle_status = 'active'");
     expect(query.mock.calls[1][1]).toEqual([residentId, complexB, 'society_notice']);
   });
 
@@ -173,6 +174,7 @@ describe('Society notices authorization and delivery', () => {
     expect(listCall[0]).toContain("notice_uu.relation::text = 'tenant'");
     expect(listCall[0]).toContain('notice_uu.moved_out_at IS NULL');
     expect(listCall[0]).toContain('notice_building.complex_id = n.complex_id');
+    expect(listCall[0]).toContain("notice_complex.lifecycle_status = 'active'");
     expect(listCall[0]).toContain('nt.user_id = $1');
     expect(listCall[1]).toEqual([residentId, null, 'society_notice']);
   });
@@ -190,6 +192,7 @@ describe('Society notices authorization and delivery', () => {
     expect(query.mock.calls[1][0]).toContain('nt.user_id = $1');
     expect(query.mock.calls[1][0]).toContain('n.id = $2');
     expect(query.mock.calls[1][0]).toContain('n.complex_id = $3');
+    expect(query.mock.calls[1][0]).toContain("notice_assigned_complex.lifecycle_status = 'active'");
     expect(query.mock.calls[1][0]).toContain("notice_uu.relation::text = 'tenant'");
     expect(query.mock.calls[1][1]).toEqual([residentId, noticeId, complexB, 'society_notice']);
   });

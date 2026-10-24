@@ -10,7 +10,9 @@ function recipientCte(complexParam) {
     -- Preserve the existing resident delivery path.
     SELECT u.id AS user_id
       FROM users u
+      JOIN complexes recipient_complex ON recipient_complex.id = u.complex_id
      WHERE u.role = 'resident' AND u.is_active = true AND u.complex_id = $${complexParam}
+       AND recipient_complex.lifecycle_status = 'active'
     UNION
     -- A current tenant must have an active tenant relation to a unit in this complex.
     SELECT u.id AS user_id
@@ -18,8 +20,10 @@ function recipientCte(complexParam) {
       JOIN users u ON u.id = uu.user_id
       JOIN units un ON un.id = uu.unit_id
       JOIN buildings b ON b.id = un.building_id
+      JOIN complexes recipient_complex ON recipient_complex.id = b.complex_id
      WHERE u.role IN ('resident', 'tenant') AND u.is_active = true
        AND uu.relation::text = 'tenant' AND uu.moved_out_at IS NULL
+       AND recipient_complex.lifecycle_status = 'active'
        AND b.complex_id = $${complexParam}
   )`;
 }

@@ -71,6 +71,11 @@ async function ensureSocietyNoticeNotifications(user) {
        FROM notices n
       WHERE n.status = 'sent'
         AND EXISTS (
+          SELECT 1 FROM complexes notice_complex
+           WHERE notice_complex.id = n.complex_id
+             AND notice_complex.lifecycle_status = 'active'
+        )
+        AND EXISTS (
           SELECT 1 FROM users notice_user
            WHERE notice_user.id = $1
              AND notice_user.role IN ('resident', 'tenant')

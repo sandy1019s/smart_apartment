@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { Card, CardHeader, CardTitle, CardContent } from "../../components/ui/Card"
 import { Badge } from "../../components/ui/Badge"
 import { Button } from "../../components/ui/Button"
 import { Input } from "../../components/ui/Input"
-import { getSuperAdminDashboard, createComplex, createAdmin } from "../../api/superAdmin"
-import { Building2, Users, Plus, Loader2, Shield, MapPin } from "lucide-react"
+import { getSuperAdminDashboard, createComplex, createAdmin, updateComplex, transitionComplexLifecycle } from "../../api/superAdmin"
+import { Building2, Users, Plus, Loader2, Shield, MapPin, Pencil, Search, RotateCcw, Archive, Pause, Play } from "lucide-react"
+import { Modal } from "../../components/ui/Modal"
+import { archiveNameMatches, filterSocieties } from "./societyState.mjs"
 import toast from "react-hot-toast"
 
 const asArray = (value) => Array.isArray(value) ? value : []
@@ -28,16 +30,27 @@ export default function SuperAdminDashboard() {
   const [showAdminForm, setShowAdminForm] = useState(false)
   const [adminForm, setAdminForm] = useState({ email: "", phone: "", password: "", full_name: "", complex_id: "" })
   const [adminLoading, setAdminLoading] = useState(false)
+  const [search, setSearch] = useState("")
+  const [lifecycleFilter, setLifecycleFilter] = useState("all")
+  const [subscriptionFilter, setSubscriptionFilter] = useState("all")
+  const [editingSociety, setEditingSociety] = useState(null)
+  const [editForm, setEditForm] = useState({ name: "", address: "" })
+  const [savingSociety, setSavingSociety] = useState(false)
+  const [lifecycleBusyId, setLifecycleBusyId] = useState(null)
+  const [archiveTarget, setArchiveTarget] = useState(null)
+  const [archiveConfirmation, setArchiveConfirmation] = useState("")
 
-  const fetchData = async () => {
+  const fetchData = async (showSpinner = true) => {
     try {
-      setIsLoading(true)
+      if (showSpinner) setIsLoading(true)
       const res = await getSuperAdminDashboard()
       setData(res.success ? normalizeDashboard(res.data) : emptyDashboard)
+      return res.success ? normalizeDashboard(res.data) : emptyDashboard
     } catch {
       toast.error("Failed to load dashboard")
+      return null
     } finally {
-      setIsLoading(false)
+      if (showSpinner) setIsLoading(false)
     }
   }
 
@@ -77,6 +90,45 @@ export default function SuperAdminDashboard() {
     } finally {
       setAdminLoading(false)
     }
+  }
+
+  const visibleSocieties = useMemo(() => {
+    return filterSocieties(data.complexes, { search, lifecycleStatus: lifecycleFilter, subscriptionStatus: subscriptionFilter })
+  }, [data.complexes, lifecycleFilter, search, subscriptionFilter])
+
+  const beginEdit = (complex) => {
+    setEditingSociety(complex.id)
+    setEditForm({ name: complex.name, address: complex.address || "" })
+  }
+
+  const saveSociety = async (event) => {
+    event.preventDefault()
+    if (!editingSociety || savingSociety) return
+    setSavingSociety(true)
+    try {
+      await updateComplex(editingSociety, editForm)
+      toast.success("Society details updated")
+      setEditingSociety(null)
+      await fetchData(false)
+    } catch (error) {
+      toast.error(error.response?.data?.message || "Could not update society")
+    } finally { setSavingSociety(false) }
+  }
+
+  const runLifecycleAction = async (complex, action, confirmName) => {
+    if (lifecycleBusyId) return
+    if (action !== "archive" && !window.confirm(`${action === "suspend" ? "Suspend" : action === "reactivate" ? "Reactivate" : "Restore"} ${complex.name}?`)) return
+    setLifecycleBusyId(complex.id)
+    try {
+      await transitionComplexLifecycle(complex.id, { action, ...(confirmName ? { confirm_name: confirmName } : {}) })
+      const outcome = { suspend: "suspended", reactivate: "reactivated", archive: "archived", restore: "restored" }[action]
+      toast.success(`Society ${outcome}`)
+      setArchiveTarget(null)
+      setArchiveConfirmation("")
+      await fetchData(false)
+    } catch (error) {
+      toast.error(error.response?.data?.message || `Could not ${action} society`)
+    } finally { setLifecycleBusyId(null) }
   }
 
   if (isLoading) {
@@ -179,7 +231,7 @@ export default function SuperAdminDashboard() {
                 className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
               >
                 <option value="" disabled>Select society</option>
-                {data.complexes.map((c) => (
+                {data.complexes.filter((c) => (c.lifecycle_status || "active") === "active").map((c) => (
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
@@ -218,13 +270,18 @@ export default function SuperAdminDashboard() {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-4">
-          {data.complexes.length === 0 ? (
+          <div className="mb-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_auto_auto]">
+            <label className="relative block"><span className="sr-only">Search societies</span><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search societies, addresses, or admins" className="pl-9" /></label>
+            <select aria-label="Filter societies by lifecycle status" value={lifecycleFilter} onChange={(event) => setLifecycleFilter(event.target.value)} className="h-9 rounded-md border border-input bg-card px-3 text-sm"><option value="all">All lifecycle states</option><option value="active">Active</option><option value="suspended">Suspended</option><option value="archived">Archived</option></select>
+            <select aria-label="Filter societies by subscription status" value={subscriptionFilter} onChange={(event) => setSubscriptionFilter(event.target.value)} className="h-9 rounded-md border border-input bg-card px-3 text-sm"><option value="all">All subscription states</option><option value="active">Active subscription</option><option value="trial">Trial</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option><option value="none">No subscription record</option></select>
+          </div>
+          {visibleSocieties.length === 0 ? (
             <div className="py-8 text-center text-gray-500 text-sm">
-              No societies created yet.
+              {data.complexes.length ? "No societies match these filters." : "No societies created yet."}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {data.complexes.map((complex) => (
+              {visibleSocieties.map((complex) => (
                 <div
                   key={complex.id}
                   className="p-5 rounded-xl border border-border bg-card hover:shadow-md transition-shadow duration-200"
@@ -244,6 +301,15 @@ export default function SuperAdminDashboard() {
                       </div>
                     </div>
                   </div>
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    <Badge variant={complex.lifecycle_status === "archived" ? "destructive" : complex.lifecycle_status === "suspended" ? "secondary" : "success"}>{complex.lifecycle_status || "active"}</Badge>
+                    {complex.subscription_status && <Badge variant="outline">Subscription: {complex.subscription_status}</Badge>}
+                  </div>
+                  {editingSociety === complex.id && <form onSubmit={saveSociety} className="mb-3 space-y-2 rounded-lg border border-border p-3">
+                    <Input aria-label="Society name" required minLength={2} maxLength={255} value={editForm.name} onChange={(event) => setEditForm({ ...editForm, name: event.target.value })} />
+                    <Input aria-label="Society address" maxLength={500} value={editForm.address} onChange={(event) => setEditForm({ ...editForm, address: event.target.value })} placeholder="Address" />
+                    <div className="flex gap-2"><Button type="submit" size="sm" disabled={savingSociety || editForm.name.trim().length < 2}>{savingSociety ? "Saving…" : "Save details"}</Button><Button type="button" variant="outline" size="sm" onClick={() => setEditingSociety(null)} disabled={savingSociety}>Close</Button></div>
+                  </form>}
                   <div className="pt-3 border-t border-border/40 text-sm">
                     <div className="text-gray-500 mb-1 font-medium">Admin(s):</div>
                     {complex.admins && complex.admins.length > 0 ? (
@@ -267,12 +333,26 @@ export default function SuperAdminDashboard() {
                       {new Date(complex.created_at).toLocaleDateString()}
                     </Badge>
                   </div>
+                  <div className="mt-3 flex flex-wrap gap-2 border-t border-border/40 pt-3">
+                    <Button variant="outline" size="sm" onClick={() => beginEdit(complex)}><Pencil className="mr-1.5 h-3.5 w-3.5" />Edit</Button>
+                    {(complex.lifecycle_status || "active") === "active" && <Button variant="outline" size="sm" disabled={Boolean(lifecycleBusyId)} onClick={() => runLifecycleAction(complex, "suspend")}><Pause className="mr-1.5 h-3.5 w-3.5" />Suspend</Button>}
+                    {complex.lifecycle_status === "suspended" && <Button variant="outline" size="sm" disabled={Boolean(lifecycleBusyId)} onClick={() => runLifecycleAction(complex, "reactivate")}><Play className="mr-1.5 h-3.5 w-3.5" />Reactivate</Button>}
+                    {complex.lifecycle_status === "archived" ? <Button variant="outline" size="sm" disabled={Boolean(lifecycleBusyId)} onClick={() => runLifecycleAction(complex, "restore")}><RotateCcw className="mr-1.5 h-3.5 w-3.5" />Restore</Button> : <Button variant="destructive" size="sm" disabled={Boolean(lifecycleBusyId)} onClick={() => { setArchiveTarget(complex); setArchiveConfirmation("") }}><Archive className="mr-1.5 h-3.5 w-3.5" />Archive</Button>}
+                    {lifecycleBusyId === complex.id && <span className="self-center text-xs text-gray-500">Updating…</span>}
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </CardContent>
       </Card>
+      <Modal isOpen={Boolean(archiveTarget)} onClose={() => { if (!lifecycleBusyId) { setArchiveTarget(null); setArchiveConfirmation("") } }} title="Archive society">
+        {archiveTarget && <div className="space-y-4">
+          <p className="text-sm text-gray-600 dark:text-gray-300">Archiving <strong>{archiveTarget.name}</strong> removes it from normal society operations but preserves all records and relationships. This does not permanently delete data.</p>
+          <label className="block space-y-1 text-sm font-medium">Type <strong>{archiveTarget.name}</strong> to confirm<Input autoComplete="off" value={archiveConfirmation} onChange={(event) => setArchiveConfirmation(event.target.value)} /></label>
+          <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => { setArchiveTarget(null); setArchiveConfirmation("") }} disabled={Boolean(lifecycleBusyId)}>Cancel</Button><Button variant="destructive" disabled={!archiveNameMatches(archiveConfirmation, archiveTarget.name) || Boolean(lifecycleBusyId)} onClick={() => runLifecycleAction(archiveTarget, "archive", archiveConfirmation)}>{lifecycleBusyId === archiveTarget?.id ? "Archiving…" : "Archive society"}</Button></div>
+        </div>}
+      </Modal>
     </div>
   )
 }
