@@ -38,6 +38,7 @@ export default function AIAssistant() {
   const messagesScrollRef = useRef(null)
   const inputRef = useRef(null)
   const mascotTimerRef = useRef(null)
+  const mascotWorkingTimerRef = useRef(null)
   const requestControllerRef = useRef(null)
   const winkDirectionRef = useRef(false)
 
@@ -63,6 +64,7 @@ export default function AIAssistant() {
 
   useEffect(() => () => {
     window.clearTimeout(mascotTimerRef.current)
+    window.clearTimeout(mascotWorkingTimerRef.current)
     requestControllerRef.current?.abort()
   }, [])
 
@@ -104,9 +106,13 @@ export default function AIAssistant() {
     setMessages((current) => [...current, { role: "user", content: text }])
     setIsLoading(true)
     window.clearTimeout(mascotTimerRef.current)
+    window.clearTimeout(mascotWorkingTimerRef.current)
     setMascotState("thinking")
     const controller = new AbortController()
     requestControllerRef.current = controller
+    mascotWorkingTimerRef.current = window.setTimeout(() => {
+      if (requestControllerRef.current === controller) setMascotState("working")
+    }, 1000)
 
     try {
       const res = await askAssistant(text, { signal: controller.signal, timeout: 60000 })
@@ -149,6 +155,7 @@ export default function AIAssistant() {
       ])
       playMascotSequence([{ state: "error", duration: 1400 }])
     } finally {
+      window.clearTimeout(mascotWorkingTimerRef.current)
       if (requestControllerRef.current === controller) requestControllerRef.current = null
       setIsLoading(false)
     }

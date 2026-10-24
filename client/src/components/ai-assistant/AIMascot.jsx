@@ -145,17 +145,16 @@ const FRAME_DELAY = {
 // States that play once and stop (do not loop)
 const ONE_SHOT_STATES = new Set(["click", "blink", "happy", "success", "error"])
 
-// Ambient reaction pool — thinking/working/success/error are AI-only states,
-// never triggered randomly. Blink is weighted higher to stay the most common.
-const AMBIENT_POOL = [
-  "blink", "blink", "blink",   // most frequent ambient reaction
-  "happy",                      // occasional personality spark
-]
+// Cycle through all non-result animations so the mascot stays visibly lively.
+// Click/drag and success/error remain tied to their real interactions/results.
+const AMBIENT_POOL = ["blink", "happy", "thinking", "working"]
 
 // How long each ambient reaction plays before returning to idle (ms)
 const AMBIENT_REACTION_DURATION = {
   blink: 780,    // 9 frames × 75ms ≈ 675ms + buffer
   happy: 1560,   // 12 frames × 120ms = 1440ms + buffer
+  thinking: 1800,
+  working: 1680, // 12 frames × 140ms
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -227,6 +226,7 @@ export default function AIMascot({ state: externalState = "idle", onActivate }) 
   const suppressClickRef = useRef(false)
   const suppressTimerRef = useRef(null)
   const ambientTimerRef = useRef(null)
+  const ambientIndexRef = useRef(0)
 
   const [position, setPosition] = useState(null)
   const [mascotVisible, setMascotVisible] = useState(readSavedVisibility)
@@ -348,7 +348,8 @@ export default function AIMascot({ state: externalState = "idle", onActivate }) 
       const idleWait = 5000 + Math.random() * 1000
       ambientTimerRef.current = window.setTimeout(() => {
         if (cancelled) return
-        const reaction = AMBIENT_POOL[Math.floor(Math.random() * AMBIENT_POOL.length)]
+        const reaction = AMBIENT_POOL[ambientIndexRef.current % AMBIENT_POOL.length]
+        ambientIndexRef.current += 1
         setAmbientState(reaction)
         // After the reaction plays, return to idle and schedule the next one
         const reactionDuration = AMBIENT_REACTION_DURATION[reaction] || 1000
@@ -391,6 +392,53 @@ export default function AIMascot({ state: externalState = "idle", onActivate }) 
     }
   }, [contextMenu])
 
+  // Listen at window level as a fallback for browsers that lose pointer events
+  // when the captured mascot moves or a touch pointer leaves its original hitbox.
+  useEffect(() => {
+    const movePointer = (event) => {
+      const pointer = pointerRef.current
+      if (!pointer || pointer.pointerId !== event.pointerId) return
+      const deltaX = event.clientX - pointer.startX
+      const deltaY = event.clientY - pointer.startY
+      if (!pointer.moved && Math.hypot(deltaX, deltaY) < 6) return
+      pointer.moved = true
+      event.preventDefault()
+      setIsDragging(true)
+      const next = clampMascotPosition(
+        { x: pointer.startPosition.x + deltaX, y: pointer.startPosition.y + deltaY },
+        buttonRef,
+        mascotVisible,
+      )
+      positionRef.current = next
+      setPosition(next)
+    }
+
+    const endPointer = (event) => {
+      const pointer = pointerRef.current
+      if (!pointer || pointer.pointerId !== event.pointerId) return
+      pointerRef.current = null
+      if (pointer.moved) {
+        suppressClickRef.current = true
+        window.clearTimeout(suppressTimerRef.current)
+        suppressTimerRef.current = window.setTimeout(() => {
+          suppressClickRef.current = false
+        }, 500)
+        if (positionRef.current) savePosition(positionRef.current)
+      }
+      setIsDragging(false)
+      setAmbientState("idle")
+    }
+
+    window.addEventListener("pointermove", movePointer, { capture: true, passive: false })
+    window.addEventListener("pointerup", endPointer, true)
+    window.addEventListener("pointercancel", endPointer, true)
+    return () => {
+      window.removeEventListener("pointermove", movePointer, true)
+      window.removeEventListener("pointerup", endPointer, true)
+      window.removeEventListener("pointercancel", endPointer, true)
+    }
+  }, [mascotVisible])
+
   // ── Pointer / drag handlers ────────────────────────────────────────────────
   const startPointer = (event) => {
     if (!mascotVisible) return
@@ -405,36 +453,11 @@ export default function AIMascot({ state: externalState = "idle", onActivate }) 
       startPosition: start,
       moved: false,
     }
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-  }
-
-  const movePointer = (event) => {
-    const pointer = pointerRef.current
-    if (!pointer || pointer.pointerId !== event.pointerId) return
-    const deltaX = event.clientX - pointer.startX
-    const deltaY = event.clientY - pointer.startY
-    if (!pointer.moved && Math.hypot(deltaX, deltaY) < 6) return
-    pointer.moved = true
-    event.preventDefault()
-    setIsDragging(true)
-    moveTo({ x: pointer.startPosition.x + deltaX, y: pointer.startPosition.y + deltaY })
-  }
-
-  const endPointer = (event) => {
-    const pointer = pointerRef.current
-    if (!pointer || pointer.pointerId !== event.pointerId) return
-    pointerRef.current = null
-    if (pointer.moved) {
-      suppressClickRef.current = true
-      window.clearTimeout(suppressTimerRef.current)
-      suppressTimerRef.current = window.setTimeout(() => {
-        suppressClickRef.current = false
-      }, 500)
-      if (positionRef.current) savePosition(positionRef.current)
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId)
+    } catch {
+      // Window-level pointer listeners continue the drag if capture is unsupported.
     }
-    setIsDragging(false)
-    // Brief idle buffer before resuming ambient (prevents instant reaction on drop)
-    setAmbientState("idle")
   }
 
   const handleClick = (event) => {
@@ -524,10 +547,6 @@ export default function AIMascot({ state: externalState = "idle", onActivate }) 
         } : undefined}
         data-state={isDragging ? "dragging" : activeBodyState}
         onPointerDown={startPointer}
-        onPointerMove={movePointer}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-        onLostPointerCapture={endPointer}
         onClick={handleClick}
         onKeyDown={handleKeyDown}
         onContextMenu={handleContextMenu}
