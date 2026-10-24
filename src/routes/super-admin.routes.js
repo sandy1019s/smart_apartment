@@ -13,7 +13,7 @@ const {
   reportQuerySchema,
 } = require('../validators/monetization.validator');
 const { createComplexSchema, createAdminSchema } = require('../validators/admin.validator');
-const { complexIdParamsSchema, updateComplexSchema, lifecycleTransitionSchema } = require('../validators/society-lifecycle.validator');
+const { complexIdParamsSchema, complexAdminParamsSchema, updateComplexSchema, lifecycleTransitionSchema } = require('../validators/society-lifecycle.validator');
 
 router.use(requireAuth);
 router.use(requireRole(['super_admin']));
@@ -23,6 +23,7 @@ router.post('/complexes', validate(createComplexSchema), superAdminController.cr
 router.get('/complexes/:id', validateParams(complexIdParamsSchema), superAdminController.getComplex);
 router.patch('/complexes/:id', validateParams(complexIdParamsSchema), validate(updateComplexSchema), superAdminController.updateComplex);
 router.post('/complexes/:id/lifecycle', validateParams(complexIdParamsSchema), validate(lifecycleTransitionSchema), superAdminController.transitionComplexLifecycle);
+router.delete('/complexes/:id/admins/:adminId', validateParams(complexAdminParamsSchema), superAdminController.removeComplexAdmin);
 router.post('/admins', validate(createAdminSchema), superAdminController.createAdmin);
 
 router.get('/monetization', validateQuery(dashboardQuerySchema), monetizationController.getDashboard);

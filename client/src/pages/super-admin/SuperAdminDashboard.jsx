@@ -1,12 +1,12 @@
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useRef } from "react"
 import { Card, CardHeader, CardTitle, CardContent } from "../../components/ui/Card"
 import { Badge } from "../../components/ui/Badge"
 import { Button } from "../../components/ui/Button"
 import { Input } from "../../components/ui/Input"
-import { getSuperAdminDashboard, createComplex, createAdmin, updateComplex, transitionComplexLifecycle } from "../../api/superAdmin"
+import { getSuperAdminDashboard, getComplex, createComplex, createAdmin, updateComplex, transitionComplexLifecycle, removeComplexAdmin } from "../../api/superAdmin"
 import { Building2, Users, Plus, Loader2, Shield, MapPin, Pencil, Search, RotateCcw, Archive, Pause, Play } from "lucide-react"
 import { Modal } from "../../components/ui/Modal"
-import { archiveNameMatches, filterSocieties } from "./societyState.mjs"
+import { archiveNameMatches, applyConfirmedAdminRemoval, filterSocieties } from "./societyState.mjs"
 import toast from "react-hot-toast"
 
 const asArray = (value) => Array.isArray(value) ? value : []
@@ -35,10 +35,16 @@ export default function SuperAdminDashboard() {
   const [subscriptionFilter, setSubscriptionFilter] = useState("all")
   const [editingSociety, setEditingSociety] = useState(null)
   const [editForm, setEditForm] = useState({ name: "", address: "" })
+  const [editingAdmins, setEditingAdmins] = useState([])
+  const [loadingAdmins, setLoadingAdmins] = useState(false)
   const [savingSociety, setSavingSociety] = useState(false)
+  const [adminRemovalTarget, setAdminRemovalTarget] = useState(null)
+  const [removingAdminId, setRemovingAdminId] = useState(null)
   const [lifecycleBusyId, setLifecycleBusyId] = useState(null)
   const [archiveTarget, setArchiveTarget] = useState(null)
   const [archiveConfirmation, setArchiveConfirmation] = useState("")
+  const editDetailsRequest = useRef(0)
+  const adminRemovalLock = useRef(false)
 
   const fetchData = async (showSpinner = true) => {
     try {
@@ -96,9 +102,30 @@ export default function SuperAdminDashboard() {
     return filterSocieties(data.complexes, { search, lifecycleStatus: lifecycleFilter, subscriptionStatus: subscriptionFilter })
   }, [data.complexes, lifecycleFilter, search, subscriptionFilter])
 
-  const beginEdit = (complex) => {
+  const beginEdit = async (complex) => {
+    const requestId = ++editDetailsRequest.current
     setEditingSociety(complex.id)
     setEditForm({ name: complex.name, address: complex.address || "" })
+    setEditingAdmins(asArray(complex.admins))
+    setLoadingAdmins(true)
+    try {
+      const response = await getComplex(complex.id)
+      if (requestId !== editDetailsRequest.current) return
+      if (!response?.success) throw new Error(response?.message || "Could not load society administrators")
+      setEditingAdmins(asArray(response.data?.admins))
+    } catch (error) {
+      if (requestId === editDetailsRequest.current) {
+        toast.error(error.response?.data?.message || error.message || "Could not load society administrators")
+      }
+    } finally {
+      if (requestId === editDetailsRequest.current) setLoadingAdmins(false)
+    }
+  }
+
+  const closeEdit = () => {
+    editDetailsRequest.current += 1
+    setEditingSociety(null)
+    setLoadingAdmins(false)
   }
 
   const saveSociety = async (event) => {
@@ -108,11 +135,31 @@ export default function SuperAdminDashboard() {
     try {
       await updateComplex(editingSociety, editForm)
       toast.success("Society details updated")
-      setEditingSociety(null)
+      closeEdit()
       await fetchData(false)
     } catch (error) {
       toast.error(error.response?.data?.message || "Could not update society")
     } finally { setSavingSociety(false) }
+  }
+
+  const confirmAdminRemoval = async () => {
+    const target = adminRemovalTarget
+    if (!target || adminRemovalLock.current) return
+    adminRemovalLock.current = true
+    setRemovingAdminId(target.admin.id)
+    try {
+      const response = await removeComplexAdmin(target.complex.id, target.admin.id)
+      if (!response?.success) throw new Error(response?.message || "Could not remove administrator")
+      setEditingAdmins((admins) => applyConfirmedAdminRemoval(admins, response, target.admin.id))
+      setAdminRemovalTarget(null)
+      toast.success("Administrator removed from society")
+      await fetchData(false)
+    } catch (error) {
+      toast.error(error.response?.data?.message || error.message || "Could not remove administrator")
+    } finally {
+      adminRemovalLock.current = false
+      setRemovingAdminId(null)
+    }
   }
 
   const runLifecycleAction = async (complex, action, confirmName) => {
@@ -305,10 +352,26 @@ export default function SuperAdminDashboard() {
                     <Badge variant={complex.lifecycle_status === "archived" ? "destructive" : complex.lifecycle_status === "suspended" ? "secondary" : "success"}>{complex.lifecycle_status || "active"}</Badge>
                     {complex.subscription_status && <Badge variant="outline">Subscription: {complex.subscription_status}</Badge>}
                   </div>
-                  {editingSociety === complex.id && <form onSubmit={saveSociety} className="mb-3 space-y-2 rounded-lg border border-border p-3">
+                  {editingSociety === complex.id && <form onSubmit={saveSociety} className="mb-3 space-y-3 rounded-lg border border-border p-3">
+                    <h5 className="font-medium text-foreground">Edit Society</h5>
                     <Input aria-label="Society name" required minLength={2} maxLength={255} value={editForm.name} onChange={(event) => setEditForm({ ...editForm, name: event.target.value })} />
                     <Input aria-label="Society address" maxLength={500} value={editForm.address} onChange={(event) => setEditForm({ ...editForm, address: event.target.value })} placeholder="Address" />
-                    <div className="flex gap-2"><Button type="submit" size="sm" disabled={savingSociety || editForm.name.trim().length < 2}>{savingSociety ? "Saving…" : "Save details"}</Button><Button type="button" variant="outline" size="sm" onClick={() => setEditingSociety(null)} disabled={savingSociety}>Close</Button></div>
+                    <div className="flex gap-2"><Button type="submit" size="sm" disabled={savingSociety || editForm.name.trim().length < 2}>{savingSociety ? "Saving…" : "Save details"}</Button><Button type="button" variant="outline" size="sm" onClick={closeEdit} disabled={savingSociety || Boolean(removingAdminId)}>Close</Button></div>
+                    <section className="border-t border-border/60 pt-3" aria-labelledby={`society-admins-${complex.id}`} aria-busy={loadingAdmins || Boolean(removingAdminId)}>
+                      <h6 id={`society-admins-${complex.id}`} className="mb-2 text-sm font-semibold">Administrators</h6>
+                      {loadingAdmins ? <p className="text-sm text-gray-500">Loading administrators…</p> : editingAdmins.length ? (
+                        <ul className="space-y-2">
+                          {editingAdmins.map((admin) => (
+                            <li key={admin.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-secondary/40 px-2.5 py-2 text-sm">
+                              <span className="min-w-0"><span className="font-medium">{admin.full_name}</span><span className="ml-1 break-all text-gray-500">({admin.email})</span>{admin.is_active === false && <Badge variant="secondary" className="ml-2">Inactive</Badge>}</span>
+                              <Button type="button" variant="destructive" size="sm" disabled={Boolean(removingAdminId)} onClick={() => setAdminRemovalTarget({ complex, admin })}>
+                                {removingAdminId === admin.id ? <Loader2 className="h-4 w-4 animate-spin" aria-label="Removing administrator" /> : "Remove Admin"}
+                              </Button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : <p className="text-sm text-gray-500">No administrators assigned. Use New Admin to add one.</p>}
+                    </section>
                   </form>}
                   <div className="pt-3 border-t border-border/40 text-sm">
                     <div className="text-gray-500 mb-1 font-medium">Admin(s):</div>
@@ -351,6 +414,13 @@ export default function SuperAdminDashboard() {
           <p className="text-sm text-gray-600 dark:text-gray-300">Archiving <strong>{archiveTarget.name}</strong> removes it from normal society operations but preserves all records and relationships. This does not permanently delete data.</p>
           <label className="block space-y-1 text-sm font-medium">Type <strong>{archiveTarget.name}</strong> to confirm<Input autoComplete="off" value={archiveConfirmation} onChange={(event) => setArchiveConfirmation(event.target.value)} /></label>
           <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => { setArchiveTarget(null); setArchiveConfirmation("") }} disabled={Boolean(lifecycleBusyId)}>Cancel</Button><Button variant="destructive" disabled={!archiveNameMatches(archiveConfirmation, archiveTarget.name) || Boolean(lifecycleBusyId)} onClick={() => runLifecycleAction(archiveTarget, "archive", archiveConfirmation)}>{lifecycleBusyId === archiveTarget?.id ? "Archiving…" : "Archive society"}</Button></div>
+        </div>}
+      </Modal>
+      <Modal isOpen={Boolean(adminRemovalTarget)} onClose={() => { if (!removingAdminId) setAdminRemovalTarget(null) }} title="Remove administrator">
+        {adminRemovalTarget && <div className="space-y-4">
+          <p className="text-sm text-gray-600 dark:text-gray-300">Remove <strong>{adminRemovalTarget.admin.full_name}</strong> ({adminRemovalTarget.admin.email}) from <strong>{adminRemovalTarget.complex.name}</strong>?</p>
+          <p className="text-sm text-gray-600 dark:text-gray-300">This clears only the administrator’s association with this society. Their user account and admin role remain intact.</p>
+          <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={() => setAdminRemovalTarget(null)} disabled={Boolean(removingAdminId)}>Cancel</Button><Button type="button" variant="destructive" onClick={confirmAdminRemoval} disabled={Boolean(removingAdminId)}>{removingAdminId ? "Removing…" : "Remove Admin"}</Button></div>
         </div>}
       </Modal>
     </div>

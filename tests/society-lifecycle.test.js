@@ -107,7 +107,9 @@ describe('Super Admin society lifecycle', () => {
     expect(response.status).toBe(200);
     expect(response.body.data.lifecycle_status).toBe('suspended');
     expect(client.query.mock.calls.map(([sql]) => sql.trim().split(/\s+/)[0])).toEqual(['BEGIN', 'SELECT', 'UPDATE', 'COMMIT']);
-    expect(client.query.mock.calls[2][0]).toContain('UPDATE complexes SET lifecycle_status');
+    expect(client.query.mock.calls[2][0]).toContain('UPDATE complexes SET lifecycle_status = $2::varchar');
+    expect(client.query.mock.calls[2][0]).toContain("CASE WHEN $2::varchar = 'archived'");
+    expect(client.query.mock.calls[2][1]).toEqual([complexId, 'suspended', null]);
     expect(client.query.mock.calls.some(([sql]) => /\bDELETE\b|TRUNCATE|DROP\s+TABLE/i.test(sql))).toBe(false);
     expect(auditLogger.info).toHaveBeenCalledWith(expect.objectContaining({
       action: 'society_suspended', actorId: superAdminId, entityId: complexId,
@@ -115,12 +117,40 @@ describe('Super Admin society lifecycle', () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
+  it('returns a controlled database error and rolls back a failed suspension update', async () => {
+    query.mockResolvedValueOnce({ rows: [{ id: superAdminId, role: 'super_admin', is_active: true, complex_id: null }] });
+    const client = clientWith([
+      { rows: [] },
+      { rows: [{ id: complexId, name, lifecycle_status: 'active', archived_from_status: null }] },
+      Object.assign(new Error('inconsistent types deduced for parameter $2'), { code: '42P08' }),
+      { rows: [] },
+    ]);
+    getClient.mockResolvedValueOnce(client);
+
+    const response = await request(app)
+      .post(`/super-admin/complexes/${complexId}/lifecycle`)
+      .set('Authorization', token())
+      .send({ action: 'suspend' });
+
+    expect(response.status).toBe(500);
+    expect(response.body).toEqual({
+      success: false,
+      status: 'error',
+      message: 'A server error occurred. Please try again shortly.',
+    });
+    expect(client.query.mock.calls.map(([sql]) => sql.trim().split(/\s+/)[0])).toEqual(['BEGIN', 'SELECT', 'UPDATE', 'ROLLBACK']);
+    expect(auditLogger.info).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'society_suspended' }));
+  });
+
   it('shows society details and subscription state without changing existing assignment records', async () => {
     query
       .mockResolvedValueOnce({ rows: [{ id: superAdminId, role: 'super_admin', is_active: true, complex_id: null }] })
       .mockResolvedValueOnce({ rows: [{
         id: complexId, name, lifecycle_status: 'active', total_users: 4,
-        admins: [{ id: userId, full_name: 'Society Admin', email: 'admin@example.com' }],
+        admins: [
+          { id: userId, full_name: 'Society Admin', email: 'admin@example.com', is_active: true },
+          { id: '78baae22-8302-4f93-8020-c0f3294b75d0', full_name: 'Second Admin', email: 'second@example.com', is_active: true },
+        ],
         subscription_status: 'trial',
       }] });
     const response = await request(app)
@@ -129,8 +159,73 @@ describe('Super Admin society lifecycle', () => {
     expect(response.status).toBe(200);
     expect(response.body.data.subscription_status).toBe('trial');
     expect(response.body.data.admins[0].id).toBe(userId);
+    expect(response.body.data.admins).toHaveLength(2);
     expect(query.mock.calls[1][0]).toContain('LEFT JOIN users u ON u.complex_id = c.id');
     expect(query.mock.calls[1][0]).toContain('community_subscriptions');
+  });
+
+  it('removes only the selected administrator association and preserves the account and role', async () => {
+    const removedAdmin = { id: userId, full_name: 'Society Admin', email: 'admin@example.com', role: 'admin', complex_id: null };
+    query
+      .mockResolvedValueOnce({ rows: [{ id: superAdminId, role: 'super_admin', is_active: true, complex_id: null }] })
+      .mockResolvedValueOnce({ rows: [removedAdmin] });
+
+    const response = await request(app)
+      .delete(`/super-admin/complexes/${complexId}/admins/${userId}`)
+      .set('Authorization', token());
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ success: true, data: removedAdmin });
+    expect(query.mock.calls[1][0]).toContain('UPDATE users');
+    expect(query.mock.calls[1][0]).toContain('SET complex_id = NULL, updated_at = now()');
+    expect(query.mock.calls[1][0]).toContain('WHERE id = $1::uuid');
+    expect(query.mock.calls[1][0]).toContain('AND complex_id = $2::uuid');
+    expect(query.mock.calls[1][0]).toContain("AND role = 'admin'");
+    expect(query.mock.calls[1][0]).not.toMatch(/DELETE|UPDATE users SET role|user_units|complexes/i);
+    expect(query.mock.calls[1][1]).toEqual([userId, complexId]);
+    expect(auditLogger.info).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'society_admin_removed', actorId: superAdminId, entityId: userId, complexId,
+    }));
+  });
+
+  it('rejects administrator removal by non-super-admin users', async () => {
+    query.mockResolvedValueOnce({ rows: [{ id: userId, role: 'admin', is_active: true, complex_id: complexId }] });
+
+    const response = await request(app)
+      .delete(`/super-admin/complexes/${complexId}/admins/${userId}`)
+      .set('Authorization', token('admin', userId));
+
+    expect(response.status).toBe(403);
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects removal when the selected administrator is not assigned to that society', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [{ id: superAdminId, role: 'super_admin', is_active: true, complex_id: null }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const response = await request(app)
+      .delete(`/super-admin/complexes/${complexId}/admins/${userId}`)
+      .set('Authorization', token());
+
+    expect(response.status).toBe(404);
+    expect(response.body.success).toBe(false);
+    expect(query.mock.calls[1][0]).toContain('AND complex_id = $2::uuid');
+    expect(auditLogger.info).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'society_admin_removed' }));
+  });
+
+  it('handles an already removed administrator without reporting success', async () => {
+    query
+      .mockResolvedValueOnce({ rows: [{ id: superAdminId, role: 'super_admin', is_active: true, complex_id: null }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const response = await request(app)
+      .delete(`/super-admin/complexes/${complexId}/admins/${userId}`)
+      .set('Authorization', token());
+
+    expect(response.status).toBe(404);
+    expect(response.body.success).toBe(false);
+    expect(auditLogger.info).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'society_admin_removed' }));
   });
 
   it('edits only allowed society fields and ignores client-supplied lifecycle status', async () => {

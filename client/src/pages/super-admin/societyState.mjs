@@ -11,3 +11,8 @@ export const filterSocieties = (societies, { search = "", lifecycleStatus = "all
 }
 
 export const archiveNameMatches = (typedName, societyName) => typedName === societyName
+
+export const applyConfirmedAdminRemoval = (admins, response, adminId) => {
+  if (!response?.success) return admins
+  return (Array.isArray(admins) ? admins : []).filter((admin) => admin.id !== adminId)
+}

@@ -13,6 +13,7 @@ export const createComplex = async (data) => {
 export const getComplex = async (id) => (await api.get(`/super-admin/complexes/${id}`)).data
 export const updateComplex = async (id, data) => (await api.patch(`/super-admin/complexes/${id}`, data)).data
 export const transitionComplexLifecycle = async (id, data) => (await api.post(`/super-admin/complexes/${id}/lifecycle`, data)).data
+export const removeComplexAdmin = async (complexId, adminId) => (await api.delete(`/super-admin/complexes/${complexId}/admins/${adminId}`)).data
 
 export const createAdmin = async (data) => {
   const res = await api.post('/super-admin/admins', data)

@@ -42,7 +42,7 @@ exports.getDashboard = async (req, res, next) => {
                COUNT(u.id) FILTER (WHERE u.role != 'super_admin') AS total_users,
                COALESCE(
                  json_agg(
-                   json_build_object('full_name', u.full_name, 'email', u.email)
+                   json_build_object('id', u.id, 'full_name', u.full_name, 'email', u.email, 'is_active', u.is_active)
                  ) FILTER (WHERE u.role = 'admin'),
                  '[]'
                ) AS admins,
@@ -88,7 +88,7 @@ exports.getComplex = async (req, res, next) => {
       SELECT c.id, c.name, c.address, c.created_at, c.lifecycle_status,
              c.archived_at, c.archived_from_status,
              COUNT(DISTINCT u.id) FILTER (WHERE u.role <> 'super_admin')::int AS total_users,
-             COALESCE(json_agg(DISTINCT jsonb_build_object('id', u.id, 'full_name', u.full_name, 'email', u.email))
+             COALESCE(json_agg(DISTINCT jsonb_build_object('id', u.id, 'full_name', u.full_name, 'email', u.email, 'is_active', u.is_active))
                FILTER (WHERE u.role = 'admin'), '[]'::json) AS admins,
              (SELECT cs.status FROM community_subscriptions cs WHERE cs.complex_id = c.id
                ORDER BY cs.started_at DESC, cs.created_at DESC LIMIT 1) AS subscription_status
@@ -152,10 +152,10 @@ exports.transitionComplexLifecycle = async (req, res, next) => {
       }
 
       const { rows } = await client.query(`
-        UPDATE complexes SET lifecycle_status = $2,
-               archived_at = CASE WHEN $2 = 'archived' THEN now() ELSE NULL END,
-               archived_from_status = $3
-         WHERE id = $1
+        UPDATE complexes SET lifecycle_status = $2::varchar,
+               archived_at = CASE WHEN $2::varchar = 'archived' THEN now() ELSE NULL END,
+               archived_from_status = $3::varchar
+         WHERE id = $1::uuid
          RETURNING id, name, address, created_at, lifecycle_status, archived_at, archived_from_status
       `, [society.id, nextStatus, archiveFrom]);
       return rows[0];
@@ -163,6 +163,36 @@ exports.transitionComplexLifecycle = async (req, res, next) => {
     const pastTense = { suspend: 'suspended', reactivate: 'reactivated', archive: 'archived', restore: 'restored' }[action];
     writeSocietyAudit(req, pastTense, complex);
     res.status(200).json({ success: true, data: complex, message: `Society ${pastTense} successfully` });
+  } catch (err) { next(err); }
+};
+
+// DELETE /super-admin/complexes/:id/admins/:adminId — Remove only the selected
+// administrator's society association; keep their account and role intact.
+exports.removeComplexAdmin = async (req, res, next) => {
+  try {
+    const { rows } = await query(`
+      UPDATE users
+         SET complex_id = NULL, updated_at = now()
+       WHERE id = $1::uuid
+         AND complex_id = $2::uuid
+         AND role = 'admin'
+       RETURNING id, full_name, email, role, complex_id
+    `, [req.params.adminId, req.params.id]);
+    if (!rows.length) return next(new AppError('Administrator is not assigned to this society', 404));
+
+    auditLogger.info({
+      action: 'society_admin_removed',
+      actorId: req.user.id,
+      actorRole: req.user.role,
+      entityType: 'user',
+      entityId: rows[0].id,
+      complexId: req.params.id,
+    });
+    res.status(200).json({
+      success: true,
+      data: rows[0],
+      message: 'Administrator removed from society; the account remains intact',
+    });
   } catch (err) { next(err); }
 };
 

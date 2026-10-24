@@ -3,6 +3,7 @@ const Joi = require('joi');
 const uuid = Joi.string().guid({ version: ['uuidv4', 'uuidv5'] }).required();
 
 const complexIdParamsSchema = Joi.object({ id: uuid });
+const complexAdminParamsSchema = Joi.object({ id: uuid, adminId: uuid });
 const updateComplexSchema = Joi.object({
   name: Joi.string().trim().min(2).max(255),
   address: Joi.string().trim().max(500).allow('', null),
@@ -14,4 +15,4 @@ const lifecycleTransitionSchema = Joi.object({
   }),
 });
 
-module.exports = { complexIdParamsSchema, updateComplexSchema, lifecycleTransitionSchema };
+module.exports = { complexIdParamsSchema, complexAdminParamsSchema, updateComplexSchema, lifecycleTransitionSchema };
